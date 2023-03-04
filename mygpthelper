@@ -1,0 +1,65 @@
+!pip install transformers
+!pip install datasets
+
+import numpy as np
+import tensorflow as tf
+from transformers import TFAutoModel, AutoTokenizer
+import datasets
+
+# Load pre-trained language model and tokenizer
+model_name = "roberta-base"
+model = TFAutoModel.from_pretrained(model_name)
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+# Load IMDB Movie Review dataset
+data = datasets.load_dataset("imdb")
+train_texts = data["train"]["text"]
+train_labels = data["train"]["label"]
+
+# Define hyperparameters
+learning_rate = 0.001
+num_epochs = 10
+batch_size = 64
+max_seq_length = 256
+num_classes = 2
+
+# Define data pipeline
+train_data = tf.data.Dataset.from_tensor_slices((train_texts, train_labels))
+train_data = train_data.shuffle(buffer_size=len(train_texts))
+train_data = train_data.map(lambda text, label: (tokenizer.encode(text, add_special_tokens=True, max_length=max_seq_length, truncation=True), label))
+train_data = train_data.padded_batch(batch_size, padded_shapes=([max_seq_length], []))
+train_data = train_data.prefetch(tf.data.experimental.AUTOTUNE)
+
+# Define model architecture
+input_ids = tf.keras.layers.Input(shape=(max_seq_length,), dtype=tf.int32)
+attention_mask = tf.keras.layers.Input(shape=(max_seq_length,), dtype=tf.int32)
+embeddings = model.roberta(input_ids, attention_mask=attention_mask)[0]
+pooler_output = tf.keras.layers.GlobalMaxPooling1D()(embeddings)
+dropout = tf.keras.layers.Dropout(0.3)(pooler_output)
+output = tf.keras.layers.Dense(num_classes, activation="softmax")(dropout)
+model = tf.keras.Model(inputs=[input_ids, attention_mask], outputs=output)
+
+# Define loss function and optimizer
+loss_fn = tf.keras.losses.SparseCategoricalCrossentropy()
+optimizer = tf.keras.optimizers.Adam(learning_rate)
+
+# Define training loop
+for epoch in range(num_epochs):
+    print(f"Epoch {epoch + 1}/{num_epochs}")
+    for i, (inputs, labels) in enumerate(train_data):
+        with tf.GradientTape() as tape:
+            predictions = model(inputs, training=True)
+            loss = loss_fn(labels, predictions)
+        gradients = tape.gradient(loss, model.trainable_variables)
+        optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+        if i % 10 == 0:
+            print(f"Step {i}: Loss = {loss:.4f}")
+    
+# Define task function
+def classify(text):
+    encoded_text = tokenizer.encode(text, add_special_tokens=True, max_length=max_seq_length, truncation=True)
+    input_ids = tf.constant([encoded_text])
+    attention_mask = tf.constant([[int(token_id > 0) for token_id in encoded_text]])
+    predictions = model((input_ids, attention_mask)).numpy()[0]
+    predicted_class = np.argmax(predictions)
+    return predicted_class
